@@ -14,6 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { Alert } from "@/components/ui/alert";
 import { toast } from "sonner";
 import { DEFAULT_GUARDRAILS } from "@/lib/types";
 
@@ -41,7 +42,8 @@ export function ClientForm({ initialData }: ClientFormProps) {
   const isEdit = !!initialData;
 
   const [saving, setSaving] = useState(false);
-  const [validating, setValidating] = useState(false);
+  const [initializing, setInitializing] = useState(false);
+  const [initialized, setInitialized] = useState(isEdit);
 
   const [form, setForm] = useState({
     name: initialData?.name ?? "",
@@ -51,9 +53,9 @@ export function ClientForm({ initialData }: ClientFormProps) {
     actualWeekTab: initialData?.actualWeekTab ?? "ACTUAL WEEK (Live Přehled)",
     runLogTab: initialData?.runLogTab ?? "RUN_LOG",
     productSheetId: initialData?.productSheetId ?? "",
-    productTab: initialData?.productTab ?? "",
+    productTab: initialData?.productTab ?? "Product Sales",
     brandSheetId: initialData?.brandSheetId ?? "",
-    brandTab: initialData?.brandTab ?? "",
+    brandTab: initialData?.brandTab ?? "Brand Sales",
     feedUrl: initialData?.feedUrl ?? "",
     guardrails: JSON.stringify(
       initialData?.guardrails ?? DEFAULT_GUARDRAILS,
@@ -66,24 +68,51 @@ export function ClientForm({ initialData }: ClientFormProps) {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  async function validateSheet(sheetId: string, sheetName: string) {
-    setValidating(true);
+  function extractSheetId(input: string): string {
+    const match = input.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (match) return match[1];
+    return input.trim();
+  }
+
+  async function handleInitialize() {
+    const sheetId = extractSheetId(form.processSheetId);
+    if (!sheetId) {
+      toast.error("Enter a Google Sheet ID or URL first");
+      return;
+    }
+
+    setInitializing(true);
     try {
-      const res = await fetch("/api/sheets/validate", {
+      const res = await fetch("/api/sheets/initialize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spreadsheetId: sheetId, sheetName }),
+        body: JSON.stringify({ spreadsheetId: sheetId }),
       });
+
       const data = await res.json();
-      if (data.ok) {
-        toast.success(`Sheet "${data.title}" — tab "${sheetName}" is accessible. Columns: ${data.foundColumns?.join(", ")}`);
-      } else {
-        toast.error(data.error || `Missing columns: ${data.missingColumns?.join(", ")}`);
+      if (!res.ok) {
+        throw new Error(data.error || "Initialization failed");
       }
-    } catch {
-      toast.error("Validation request failed");
+
+      setForm((prev) => ({
+        ...prev,
+        processSheetId: data.config.processSheetId,
+        masterTab: data.config.masterTab,
+        nextWeekTab: data.config.nextWeekTab,
+        actualWeekTab: data.config.actualWeekTab,
+        runLogTab: data.config.runLogTab,
+        productSheetId: data.config.productSheetId,
+        productTab: data.config.productTab,
+        brandSheetId: data.config.brandSheetId,
+        brandTab: data.config.brandTab,
+      }));
+
+      setInitialized(true);
+      toast.success(`Sheet initialized! Created tabs: ${data.created.join(", ")}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Initialization failed");
     } finally {
-      setValidating(false);
+      setInitializing(false);
     }
   }
 
@@ -102,6 +131,9 @@ export function ClientForm({ initialData }: ClientFormProps) {
 
     const payload = {
       ...form,
+      processSheetId: extractSheetId(form.processSheetId),
+      productSheetId: extractSheetId(form.productSheetId),
+      brandSheetId: extractSheetId(form.brandSheetId),
       feedUrl: form.feedUrl || null,
       guardrails,
     };
@@ -150,143 +182,62 @@ export function ClientForm({ initialData }: ClientFormProps) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Process Sheet</CardTitle>
+          <CardTitle>Google Sheet</CardTitle>
           <CardDescription>
-            The main Google Sheet containing campaign data
+            Create an empty Google Sheet, share it with{" "}
+            <code className="rounded bg-muted px-1 text-xs">
+              ecamp-sheets@ecamp-planner.iam.gserviceaccount.com
+            </code>{" "}
+            as Editor, then paste the Sheet ID or URL below.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <Label htmlFor="processSheetId">Google Sheet ID</Label>
+            <Label htmlFor="processSheetId">Google Sheet ID or URL</Label>
             <Input
               id="processSheetId"
               value={form.processSheetId}
               onChange={(e) => updateField("processSheetId", e.target.value)}
-              placeholder="e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+              placeholder="https://docs.google.com/spreadsheets/d/xxxxx/edit or just the ID"
               required
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="masterTab">MASTER Tab</Label>
-              <Input
-                id="masterTab"
-                value={form.masterTab}
-                onChange={(e) => updateField("masterTab", e.target.value)}
-              />
+          {!initialized && (
+            <div className="space-y-3">
+              <Alert>
+                <p className="text-sm">
+                  Click <strong>Initialize Sheet</strong> to automatically
+                  create all required tabs (MASTER, NEXT WEEK, ACTUAL WEEK,
+                  RUN_LOG, Product Sales, Brand Sales) with correct headers
+                  and 9 weeks of campaign rows.
+                </p>
+              </Alert>
+              <Button
+                type="button"
+                onClick={handleInitialize}
+                disabled={initializing || !form.processSheetId}
+              >
+                {initializing ? "Initializing..." : "Initialize Sheet"}
+              </Button>
             </div>
-            <div>
-              <Label htmlFor="nextWeekTab">NEXT WEEK Tab</Label>
-              <Input
-                id="nextWeekTab"
-                value={form.nextWeekTab}
-                onChange={(e) => updateField("nextWeekTab", e.target.value)}
-              />
-            </div>
-            <div>
-              <Label htmlFor="actualWeekTab">ACTUAL WEEK Tab</Label>
-              <Input
-                id="actualWeekTab"
-                value={form.actualWeekTab}
-                onChange={(e) => updateField("actualWeekTab", e.target.value)}
-              />
-            </div>
-            <div>
-              <Label htmlFor="runLogTab">RUN_LOG Tab</Label>
-              <Input
-                id="runLogTab"
-                value={form.runLogTab}
-                onChange={(e) => updateField("runLogTab", e.target.value)}
-              />
-            </div>
-          </div>
+          )}
 
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={validating || !form.processSheetId}
-            onClick={() => validateSheet(form.processSheetId, form.masterTab)}
-          >
-            {validating ? "Validating..." : "Validate Process Sheet"}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Product Sales Sheet</CardTitle>
-          <CardDescription>
-            Google Sheet with product-level sales data
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div>
-            <Label htmlFor="productSheetId">Google Sheet ID</Label>
-            <Input
-              id="productSheetId"
-              value={form.productSheetId}
-              onChange={(e) => updateField("productSheetId", e.target.value)}
-              required
-            />
-          </div>
-          <div>
-            <Label htmlFor="productTab">Tab Name</Label>
-            <Input
-              id="productTab"
-              value={form.productTab}
-              onChange={(e) => updateField("productTab", e.target.value)}
-              required
-            />
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={validating || !form.productSheetId || !form.productTab}
-            onClick={() => validateSheet(form.productSheetId, form.productTab)}
-          >
-            {validating ? "Validating..." : "Validate"}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Brand Sales Sheet</CardTitle>
-          <CardDescription>
-            Google Sheet with brand-level aggregated data
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div>
-            <Label htmlFor="brandSheetId">Google Sheet ID</Label>
-            <Input
-              id="brandSheetId"
-              value={form.brandSheetId}
-              onChange={(e) => updateField("brandSheetId", e.target.value)}
-              required
-            />
-          </div>
-          <div>
-            <Label htmlFor="brandTab">Tab Name</Label>
-            <Input
-              id="brandTab"
-              value={form.brandTab}
-              onChange={(e) => updateField("brandTab", e.target.value)}
-              required
-            />
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={validating || !form.brandSheetId || !form.brandTab}
-            onClick={() => validateSheet(form.brandSheetId, form.brandTab)}
-          >
-            {validating ? "Validating..." : "Validate"}
-          </Button>
+          {initialized && (
+            <div className="rounded-md border bg-muted/50 p-3">
+              <p className="mb-2 text-sm font-medium text-green-700">
+                Sheet initialized with all tabs
+              </p>
+              <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                <div>MASTER: {form.masterTab}</div>
+                <div>NEXT WEEK: {form.nextWeekTab}</div>
+                <div>ACTUAL WEEK: {form.actualWeekTab}</div>
+                <div>RUN_LOG: {form.runLogTab}</div>
+                <div>Product Sales: {form.productTab}</div>
+                <div>Brand Sales: {form.brandTab}</div>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -328,7 +279,7 @@ export function ClientForm({ initialData }: ClientFormProps) {
       <Separator />
 
       <div className="flex gap-4">
-        <Button type="submit" disabled={saving}>
+        <Button type="submit" disabled={saving || (!initialized && !isEdit)}>
           {saving ? "Saving..." : isEdit ? "Update Client" : "Create Client"}
         </Button>
         <Button
