@@ -37,13 +37,20 @@ interface ClientFormProps {
   };
 }
 
+function extractSheetId(input: string): string {
+  const match = input.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (match) return match[1];
+  return input.trim();
+}
+
 export function ClientForm({ initialData }: ClientFormProps) {
   const router = useRouter();
   const isEdit = !!initialData;
 
   const [saving, setSaving] = useState(false);
   const [initializing, setInitializing] = useState(false);
-  const [initialized, setInitialized] = useState(isEdit);
+  const [processInitialized, setProcessInitialized] = useState(isEdit);
+  const [validating, setValidating] = useState(false);
 
   const [form, setForm] = useState({
     name: initialData?.name ?? "",
@@ -53,9 +60,9 @@ export function ClientForm({ initialData }: ClientFormProps) {
     actualWeekTab: initialData?.actualWeekTab ?? "ACTUAL WEEK (Live Přehled)",
     runLogTab: initialData?.runLogTab ?? "RUN_LOG",
     productSheetId: initialData?.productSheetId ?? "",
-    productTab: initialData?.productTab ?? "Product Sales",
+    productTab: initialData?.productTab ?? "",
     brandSheetId: initialData?.brandSheetId ?? "",
-    brandTab: initialData?.brandTab ?? "Brand Sales",
+    brandTab: initialData?.brandTab ?? "",
     feedUrl: initialData?.feedUrl ?? "",
     guardrails: JSON.stringify(
       initialData?.guardrails ?? DEFAULT_GUARDRAILS,
@@ -68,16 +75,10 @@ export function ClientForm({ initialData }: ClientFormProps) {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  function extractSheetId(input: string): string {
-    const match = input.match(/\/d\/([a-zA-Z0-9_-]+)/);
-    if (match) return match[1];
-    return input.trim();
-  }
-
   async function handleInitialize() {
     const sheetId = extractSheetId(form.processSheetId);
     if (!sheetId) {
-      toast.error("Enter a Google Sheet ID or URL first");
+      toast.error("Zadej Google Sheet ID nebo URL");
       return;
     }
 
@@ -90,25 +91,15 @@ export function ClientForm({ initialData }: ClientFormProps) {
       });
 
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Initialization failed");
-      }
+      if (!res.ok) throw new Error(data.error || "Initialization failed");
 
       setForm((prev) => ({
         ...prev,
-        processSheetId: data.config.processSheetId,
-        masterTab: data.config.masterTab,
-        nextWeekTab: data.config.nextWeekTab,
-        actualWeekTab: data.config.actualWeekTab,
-        runLogTab: data.config.runLogTab,
-        productSheetId: data.config.productSheetId,
-        productTab: data.config.productTab,
-        brandSheetId: data.config.brandSheetId,
-        brandTab: data.config.brandTab,
+        processSheetId: sheetId,
       }));
 
-      setInitialized(true);
-      toast.success(`Sheet initialized! Created tabs: ${data.created.join(", ")}`);
+      setProcessInitialized(true);
+      toast.success(`Sheet "${data.title}" initialized! Tabs: ${data.created.join(", ")}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Initialization failed");
     } finally {
@@ -116,15 +107,53 @@ export function ClientForm({ initialData }: ClientFormProps) {
     }
   }
 
+  async function validateSheet(sheetId: string, sheetName: string) {
+    if (!sheetId || !sheetName) {
+      toast.error("Vyplň Sheet ID i název listu");
+      return;
+    }
+    setValidating(true);
+    try {
+      const res = await fetch("/api/sheets/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          spreadsheetId: extractSheetId(sheetId),
+          sheetName,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        toast.success(`OK — "${data.title}" / "${sheetName}". Sloupce: ${data.foundColumns?.join(", ")}`);
+      } else {
+        toast.error(data.error || `Chybějící sloupce: ${data.missingColumns?.join(", ")}`);
+      }
+    } catch {
+      toast.error("Validace selhala");
+    } finally {
+      setValidating(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+
+    if (!form.productSheetId || !form.productTab) {
+      toast.error("Vyplň Product Sales sheet a název listu");
+      return;
+    }
+    if (!form.brandSheetId || !form.brandTab) {
+      toast.error("Vyplň Brand Sales sheet a název listu");
+      return;
+    }
+
     setSaving(true);
 
     let guardrails;
     try {
       guardrails = JSON.parse(form.guardrails);
     } catch {
-      toast.error("Invalid JSON in guardrails");
+      toast.error("Neplatný JSON v guardrails");
       setSaving(false);
       return;
     }
@@ -147,70 +176,71 @@ export function ClientForm({ initialData }: ClientFormProps) {
         body: JSON.stringify(payload),
       });
 
-      if (!res.ok) {
-        throw new Error(await res.text());
-      }
+      if (!res.ok) throw new Error(await res.text());
 
-      toast.success(isEdit ? "Client updated" : "Client created");
+      toast.success(isEdit ? "Klient aktualizován" : "Klient vytvořen");
       router.push("/");
       router.refresh();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Save failed");
+      toast.error(err instanceof Error ? err.message : "Uložení selhalo");
     } finally {
       setSaving(false);
     }
   }
 
+  const serviceAccountEmail = "ecamp-sheets@ecamp-planner.iam.gserviceaccount.com";
+
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>General</CardTitle>
+          <CardTitle>Klient</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent>
           <div>
-            <Label htmlFor="name">Client Name</Label>
+            <Label htmlFor="name">Název klienta</Label>
             <Input
               id="name"
               value={form.name}
               onChange={(e) => updateField("name", e.target.value)}
+              placeholder="např. VitalPoint"
               required
             />
           </div>
         </CardContent>
       </Card>
 
+      {/* Process Sheet */}
       <Card>
         <CardHeader>
-          <CardTitle>Google Sheet</CardTitle>
+          <CardTitle>Procesní Sheet</CardTitle>
           <CardDescription>
-            Create an empty Google Sheet, share it with{" "}
+            Vytvoř prázdný Google Sheet a sdílej ho s{" "}
             <code className="rounded bg-muted px-1 text-xs">
-              ecamp-sheets@ecamp-planner.iam.gserviceaccount.com
+              {serviceAccountEmail}
             </code>{" "}
-            as Editor, then paste the Sheet ID or URL below.
+            jako <strong>Editor</strong>. Aplikace v něm automaticky vytvoří
+            listy: MASTER, NEXT WEEK, ACTUAL WEEK a RUN_LOG.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <Label htmlFor="processSheetId">Google Sheet ID or URL</Label>
+            <Label htmlFor="processSheetId">Google Sheet ID nebo URL</Label>
             <Input
               id="processSheetId"
               value={form.processSheetId}
               onChange={(e) => updateField("processSheetId", e.target.value)}
-              placeholder="https://docs.google.com/spreadsheets/d/xxxxx/edit or just the ID"
+              placeholder="https://docs.google.com/spreadsheets/d/xxxxx/edit"
               required
             />
           </div>
 
-          {!initialized && (
+          {!processInitialized ? (
             <div className="space-y-3">
               <Alert>
                 <p className="text-sm">
-                  Click <strong>Initialize Sheet</strong> to automatically
-                  create all required tabs (MASTER, NEXT WEEK, ACTUAL WEEK,
-                  RUN_LOG, Product Sales, Brand Sales) with correct headers
-                  and 9 weeks of campaign rows.
+                  Klikni <strong>Inicializovat Sheet</strong> — automaticky se
+                  vytvoří 4 listy se správným záhlavím a 9 týdnů kampaní.
                 </p>
               </Alert>
               <Button
@@ -218,35 +248,128 @@ export function ClientForm({ initialData }: ClientFormProps) {
                 onClick={handleInitialize}
                 disabled={initializing || !form.processSheetId}
               >
-                {initializing ? "Initializing..." : "Initialize Sheet"}
+                {initializing ? "Inicializuji..." : "Inicializovat Sheet"}
               </Button>
             </div>
-          )}
-
-          {initialized && (
+          ) : (
             <div className="rounded-md border bg-muted/50 p-3">
               <p className="mb-2 text-sm font-medium text-green-700">
-                Sheet initialized with all tabs
+                Procesní Sheet inicializován
               </p>
-              <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+              <div className="grid grid-cols-2 gap-1 text-xs text-muted-foreground">
                 <div>MASTER: {form.masterTab}</div>
                 <div>NEXT WEEK: {form.nextWeekTab}</div>
                 <div>ACTUAL WEEK: {form.actualWeekTab}</div>
                 <div>RUN_LOG: {form.runLogTab}</div>
-                <div>Product Sales: {form.productTab}</div>
-                <div>Brand Sales: {form.brandTab}</div>
               </div>
             </div>
           )}
         </CardContent>
       </Card>
 
+      {/* Product Sales */}
       <Card>
         <CardHeader>
-          <CardTitle>Product Feed (Optional)</CardTitle>
-          <CardDescription>XML feed URL for product catalog</CardDescription>
+          <CardTitle>Produktová prodejnost</CardTitle>
+          <CardDescription>
+            Google Sheet s prodejními daty produktů (z analytiky, e-shopu).
+            Sdílej ho s{" "}
+            <code className="rounded bg-muted px-1 text-xs">
+              {serviceAccountEmail}
+            </code>{" "}
+            jako <strong>Viewer</strong>.
+            Očekávané sloupce: Item name, Date, Items viewed, Items added to
+            cart, Items purchased, Item revenue.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div>
+            <Label htmlFor="productSheetId">Google Sheet ID nebo URL</Label>
+            <Input
+              id="productSheetId"
+              value={form.productSheetId}
+              onChange={(e) => updateField("productSheetId", e.target.value)}
+              placeholder="https://docs.google.com/spreadsheets/d/xxxxx/edit"
+              required
+            />
+          </div>
+          <div>
+            <Label htmlFor="productTab">Název listu (tab)</Label>
+            <Input
+              id="productTab"
+              value={form.productTab}
+              onChange={(e) => updateField("productTab", e.target.value)}
+              placeholder="např. Product Sales"
+              required
+            />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={validating || !form.productSheetId || !form.productTab}
+            onClick={() => validateSheet(form.productSheetId, form.productTab)}
+          >
+            {validating ? "Ověřuji..." : "Ověřit přístup"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Brand Sales */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Brand prodejnost</CardTitle>
+          <CardDescription>
+            Google Sheet s agregovanými daty po brandech.
+            Sdílej ho s{" "}
+            <code className="rounded bg-muted px-1 text-xs">
+              {serviceAccountEmail}
+            </code>{" "}
+            jako <strong>Viewer</strong>.
+            Očekávané sloupce: Item brand, Items viewed, Items added to cart,
+            Items purchased, Item revenue.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <Label htmlFor="brandSheetId">Google Sheet ID nebo URL</Label>
+            <Input
+              id="brandSheetId"
+              value={form.brandSheetId}
+              onChange={(e) => updateField("brandSheetId", e.target.value)}
+              placeholder="https://docs.google.com/spreadsheets/d/xxxxx/edit"
+              required
+            />
+          </div>
+          <div>
+            <Label htmlFor="brandTab">Název listu (tab)</Label>
+            <Input
+              id="brandTab"
+              value={form.brandTab}
+              onChange={(e) => updateField("brandTab", e.target.value)}
+              placeholder="např. Brand Sales"
+              required
+            />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={validating || !form.brandSheetId || !form.brandTab}
+            onClick={() => validateSheet(form.brandSheetId, form.brandTab)}
+          >
+            {validating ? "Ověřuji..." : "Ověřit přístup"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Feed */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Produktový feed (volitelné)</CardTitle>
+          <CardDescription>XML feed URL pro produktový katalog</CardDescription>
+        </CardHeader>
+        <CardContent>
           <div>
             <Label htmlFor="feedUrl">Feed URL</Label>
             <Input
@@ -259,11 +382,12 @@ export function ClientForm({ initialData }: ClientFormProps) {
         </CardContent>
       </Card>
 
+      {/* Guardrails */}
       <Card>
         <CardHeader>
           <CardTitle>Guardrails</CardTitle>
           <CardDescription>
-            Configuration limits and thresholds (JSON)
+            Konfigurační limity a prahy (JSON)
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -279,15 +403,19 @@ export function ClientForm({ initialData }: ClientFormProps) {
       <Separator />
 
       <div className="flex gap-4">
-        <Button type="submit" disabled={saving || (!initialized && !isEdit)}>
-          {saving ? "Saving..." : isEdit ? "Update Client" : "Create Client"}
+        <Button type="submit" disabled={saving || (!processInitialized && !isEdit)}>
+          {saving
+            ? "Ukládám..."
+            : isEdit
+              ? "Aktualizovat klienta"
+              : "Vytvořit klienta"}
         </Button>
         <Button
           type="button"
           variant="outline"
           onClick={() => router.push("/")}
         >
-          Cancel
+          Zrušit
         </Button>
       </div>
     </form>

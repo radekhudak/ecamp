@@ -13,7 +13,7 @@ function getAuth() {
   });
 }
 
-const TAB_DEFINITIONS = [
+const PROCESS_TABS = [
   {
     name: "Kampaně_vitalpoint",
     headers: [
@@ -43,20 +43,6 @@ const TAB_DEFINITIONS = [
       "počet kampaní", "počet produktů", "join rate", "hash", "status",
     ],
   },
-  {
-    name: "Product Sales",
-    headers: [
-      "Item name", "Date", "Items viewed", "Items added to cart",
-      "Items purchased", "Item revenue",
-    ],
-  },
-  {
-    name: "Brand Sales",
-    headers: [
-      "Item brand", "Items viewed", "Items added to cart",
-      "Items purchased", "Item revenue",
-    ],
-  },
 ];
 
 function generateWeekRows(): string[][] {
@@ -82,7 +68,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { spreadsheetId, tabOverrides } = await req.json();
+  const { spreadsheetId } = await req.json();
   if (!spreadsheetId) {
     return NextResponse.json({ error: "spreadsheetId required" }, { status: 400 });
   }
@@ -96,13 +82,7 @@ export async function POST(req: NextRequest) {
       meta.data.sheets?.map((s) => s.properties?.title) ?? []
     );
 
-    const tabs = TAB_DEFINITIONS.map((def) => ({
-      ...def,
-      name: tabOverrides?.[def.name] || def.name,
-    }));
-
-    // Create missing tabs
-    const tabsToCreate = tabs.filter((t) => !existingTabs.has(t.name));
+    const tabsToCreate = PROCESS_TABS.filter((t) => !existingTabs.has(t.name));
     if (tabsToCreate.length > 0) {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
@@ -114,9 +94,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Write headers (and week rows for MASTER)
     const created: string[] = [];
-    for (const tab of tabs) {
+    for (const tab of PROCESS_TABS) {
       const values: string[][] = [tab.headers];
       if (tab.generateWeeks) {
         values.push(...generateWeekRows());
@@ -131,37 +110,25 @@ export async function POST(req: NextRequest) {
       created.push(tab.name);
     }
 
-    // Delete default "Sheet1" if it exists and we created other tabs
-    if (existingTabs.has("Sheet1") || existingTabs.has("List1")) {
-      const refreshed = await sheets.spreadsheets.get({ spreadsheetId });
-      const sheet1 = refreshed.data.sheets?.find(
-        (s) => s.properties?.title === "Sheet1" || s.properties?.title === "List1"
-      );
-      if (sheet1?.properties?.sheetId != null && (refreshed.data.sheets?.length ?? 0) > 1) {
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId,
-          requestBody: {
-            requests: [{ deleteSheet: { sheetId: sheet1.properties.sheetId } }],
-          },
-        }).catch(() => {});
-      }
+    // Remove default Sheet1/List1 if other tabs exist
+    const refreshed = await sheets.spreadsheets.get({ spreadsheetId });
+    const defaultSheet = refreshed.data.sheets?.find(
+      (s) => s.properties?.title === "Sheet1" || s.properties?.title === "List1" || s.properties?.title === "Hárok1"
+    );
+    if (defaultSheet?.properties?.sheetId != null && (refreshed.data.sheets?.length ?? 0) > 1) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [{ deleteSheet: { sheetId: defaultSheet.properties.sheetId } }],
+        },
+      }).catch(() => {});
     }
 
     return NextResponse.json({
       ok: true,
       created,
       spreadsheetId,
-      config: {
-        processSheetId: spreadsheetId,
-        masterTab: tabs[0].name,
-        nextWeekTab: tabs[1].name,
-        actualWeekTab: tabs[2].name,
-        runLogTab: tabs[3].name,
-        productSheetId: spreadsheetId,
-        productTab: tabs[4].name,
-        brandSheetId: spreadsheetId,
-        brandTab: tabs[5].name,
-      },
+      title: meta.data.properties?.title,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
